@@ -154,3 +154,101 @@ measured encoder total of 944,123,648 plus embeddings.
 
 Reaching 3 B would require roughly 40 layers. **The checkpoint is a 0.95 B model**;
 describing it as 3 B is incorrect and trivially falsifiable.
+
+---
+
+## 9. Encoding DNA for LucaVirus: `seq_type` is silently ignored
+
+If you extend the pipeline to new sequences, **do not** tokenize with
+`tokenizer(text, seq_type="gene")`. It produces a valid-looking integer tensor and
+raises no error, but the ids are wrong.
+
+Why. `pretrained/lucaVirus/tokenizer_config.json` has no `vocab_type` field, so
+`AutoTokenizer.from_pretrained()` falls back to the constructor default
+`"gene_prot"`. That vocabulary maps DNA characters to **protein** letters:
+
+```
+'1'->5  '2'->6  '3'->7  '4'->8  '5'->9        <- nucleotide ids (gene vocab)
+'A'->11 'T'->17 'G'->12 'C'->29               <- amino-acid ids (gene_prot vocab)
+```
+
+`_convert_text_to_ids` does execute `if seq_type == "gene": text = gene_seq_replace(text)`,
+turning `'GAAT'` into `'4112'` — but the lookup then uses the `gene_prot` vocabulary,
+and `'4' '1' '1' '2'` are also legal protein characters, so the DNA passes through
+unchanged. Measured consequence:
+
+```
+tokenizer(seq, seq_type='gene')  -> [2, 11, 17, 12, 17, 11, ...]   = [CLS] G A A T A
+tokenizer(seq, seq_type='prot')  -> [2, 11, 17, 12, 17, 11, ...]   identical
+official ids cache               -> [2,  8,  5,  5,  6,  5, ...]   = [CLS] 4 1 1 2 1
+```
+
+**Fix.** `vhenet/encode.py` now does the gene mapping explicitly and never calls the
+tokenizer:
+
+```python
+from vhenet.encode import tokenize_gene_ids
+ids, mask = tokenize_gene_ids(seq_window, max_len=1024)
+```
+
+Both cache builders (`encode_ids_to_cache`, `encode_fasta_to_cache`) use it. Verify a
+cache you already have with:
+
+```python
+from vhenet.encode import verify_gene_encoding
+verify_gene_encoding("cache/ids_km_cache_934", "data/virus_sequences.fasta")
+```
+
+It re-derives tokens for a few (virus, window) pairs and compares them byte for byte;
+the shipped caches return `6/6 完全一致`.
+
+**Scope.** The reported runs are unaffected: `train.py` and `predict.py` read the
+pre-computed `ids`/`cls` caches and never invoke the tokenizer. This matters only when
+rebuilding a cache or encoding new sequences.
+
+---
+
+## 10. Raw CLS is nearly collinear; whitening is what separates viruses
+
+When quoting a "cosine similarity" figure for these features, say **which stage** you
+mean — the two differ by more than an order of magnitude:
+
+| Stage | Cosine between window-0 CLS of different viruses |
+|---|---|
+| **before** whitening | mean **0.69** (934 training set) / **0.83** (209 external set) |
+| **after** whitening | mean **0.02** (934) / **0.09** (209) |
+
+Windows of the *same* virus are also collinear before whitening (mean **0.82**),
+dropping to **0.02** after.
+
+So a statement like "LucaVirus CLS features are almost identical across viruses"
+is true of the raw encoder output, and false of the cached features that the model
+actually consumes (`cls_windows_cache_934.pt` stores the whitened values).
+
+---
+
+## 11. Pooling choice determines whether sequence *order* is visible at all
+
+`mean` pooling averages token embeddings:
+
+```
+mean_pool(seq) = (1/L) * sum_i h(token_i)
+```
+
+Summation is permutation-invariant, so **shuffling any region leaves the mean-pooled
+vector bit-identical** — regardless of how many windows you feed in. This is an
+identity, not a property of any particular model. Measured on the 209 bat CoVs
+(shuffle the spike CDS, 204 viruses):
+
+| Feature | windows | max abs dP | top-1 host changed |
+|---|---|---|---|
+| mean-pool, first window | 1 | **0.000e+00** | **0.0 %** |
+| mean-pool, all K windows | K | 6.3e-02 | **0.0 %** |
+| CLS, first window | 1 | **0.000e+00** | 0.0 % (spike out of reach) |
+| CLS, all K windows | K | 7.3e-02 | 32.8 % |
+| VHE-Net (CLS + MoE attention) | K | **9.9e-01** | **70.4 %** |
+
+Only `CLS` carries order information, and only an aggregation that can *weight windows*
+(the MoE attention) turns that into region attribution. A fixed statistic over windows
+(mean / max / std) stays permutation-invariant.
+

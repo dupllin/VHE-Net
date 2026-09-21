@@ -26,10 +26,84 @@ os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 
 GAP_CHARS = set("-. *\n\r\t")
 
+# --------------------------------------------------------------------------- #
+# gene 模式 tokenization                                                       #
+# --------------------------------------------------------------------------- #
+# 背景（踩坑记录，务必先读再改）
+#
+# LucaVirusTokenizer 有两个词表模式：'gene'（核苷酸）与 'prot'（蛋白）。
+# `AutoTokenizer.from_pretrained()` 只读取 tokenizer_config.json 里存在的字段，
+# 而该文件 **没有** `vocab_type` 字段，于是构造函数使用默认值 `"gene_prot"`，
+# 其词表把 DNA 字符映射到蛋白字母：
+#
+#     '1'->5 '2'->6 '3'->7 '4'->8 '5'->9      <- 核苷酸（gene 词表，正确）
+#     'A'->11 'T'->17 'G'->12 'C'->29         <- 蛋白字母（gene_prot 词表）
+#
+# `_convert_text_to_ids` 里虽然写了 `if seq_type == "gene": text =
+# gene_seq_replace(text)`，但 gene_seq_replace 把 'GAAT' 变成 '4112' 之后，
+# 查表用的仍是 gene_prot 词表 —— 而 '4'/'1'/'2' 恰好也是合法蛋白字符，
+# 所以 DNA 被原样映射成蛋白 token，**不抛任何异常**。实测 seq_type='gene'
+# 与 'prot' 的输出完全相同。
+#
+# 后果：特征全错（跨病毒 cosine 与正确编码相差极大），但下游不会报错。
+# 因此本模块不依赖 tokenizer 的 seq_type 参数，改为显式做 gene 映射。
+_GENE_VOCAB = {"1": 5, "2": 6, "3": 7, "4": 8, "5": 9}
+_DNA_TO_GENE = {"A": "1", "T": "2", "U": "2", "C": "3", "G": "4"}
+_PAD_ID, _CLS_ID, _SEP_ID = 0, 2, 3
+
 
 def clean_seq(seq: str) -> str:
     """去掉 MSA gap 和非法字符，统一大写。"""
     return "".join(ch for ch in seq.upper() if ch not in GAP_CHARS)
+
+
+def gene_seq_replace(seq: str) -> str:
+    """DNA -> gene 字母表：A->'1', T/U->'2', C->'3', G->'4'，其他->'5'。
+
+    与 LucaVirusTokenizer.gene_seq_replace 等价，但显式调用、不依赖 tokenizer。
+    """
+    return "".join(_DNA_TO_GENE.get(ch.upper(), "5") for ch in seq)
+
+
+def tokenize_gene_ids(seq: str, max_len: int = 1024):
+    """把一段 DNA 编成 LucaVirus 的 gene 模式 token id。
+
+    返回 (ids, mask)，二者均为 Python list，长度 == max_len。
+    布局： [CLS] + gene ids + [SEP] + [PAD]*
+    """
+    rep = gene_seq_replace(seq)[: max_len - 2]
+    ids = [_CLS_ID] + [_GENE_VOCAB[c] for c in rep] + [_SEP_ID]
+    ids = ids[:max_len] + [_PAD_ID] * max(0, max_len - len(ids))
+    mask = [1 if i != _PAD_ID else 0 for i in ids]
+    return ids, mask
+
+
+def verify_gene_encoding(ids_cache_dir, fasta_path, n_virus: int = 3,
+                         n_window: int = 3) -> bool:
+    """用 tokenize_gene_ids 复算若干窗口，与已落盘的 ids 缓存比对。
+
+    用于确认缓存是由正确的 gene 模式生成的（而不是误用 tokenizer 的
+    seq_default）。返回 True 表示全部一致。
+    """
+    from vhenet.preprocessing import parse_fasta
+
+    cache = Path(ids_cache_dir)
+    index = json.loads((cache / "index.json").read_text())
+    seq_dict = parse_fasta(fasta_path)
+    names = [n for n in sorted(index) if n in seq_dict][:n_virus]
+    total = ok = 0
+    for name in names:
+        data = torch.load(cache / index[name]["file"], map_location="cpu")
+        ids, starts = data["ids"].long(), data["starts"]
+        seq = clean_seq(seq_dict[name]) or "N"
+        for w in range(min(n_window, len(starts))):
+            s, e = starts[w]
+            mine, _ = tokenize_gene_ids(seq[s:e], max_len=ids.shape[1])
+            total += 1
+            if mine == ids[w].tolist():
+                ok += 1
+    print(f"gene 编码校验: {ok}/{total} 个 (病毒, 窗口) 完全一致")
+    return ok == total and total > 0
 
 
 def window_starts(seq_len: int, window_size: int, stride: int):
@@ -59,22 +133,15 @@ def _encode_windows(seq: str, tokenizer, model, device,
     n = len(chunks)
     for i in range(0, n, encode_batch):
         batch_text = chunks[i:i + encode_batch]
-        # 注意：LucaVirus tokenizer 的 batch 路径有 bug（核苷酸被映射到
-        # 几乎共线的 token，id 也完全不同），必须逐条单字符串 tokenize。
-        batch_enc = []
+        # 显式 gene 映射，不经 tokenizer（否则 seq_type 被忽略 -> 蛋白词表）。
+        # 见本模块顶部 "gene 模式 tokenization" 注释。
+        id_rows, mask_rows = [], []
         for text in batch_text:
-            enc = tokenizer(
-                text,
-                seq_type="gene",
-                padding="max_length",
-                truncation=True,
-                max_length=window_size + 2,  # CLS + SEQ + SEP
-                return_tensors="pt",
-                add_special_tokens=True,
-            )
-            batch_enc.append(enc)
-        ids = torch.cat([e["input_ids"] for e in batch_enc], dim=0)
-        mask = torch.cat([e["attention_mask"] for e in batch_enc], dim=0)
+            i_row, m_row = tokenize_gene_ids(text, max_len=window_size + 2)
+            id_rows.append(i_row)
+            mask_rows.append(m_row)
+        ids = torch.tensor(id_rows, dtype=torch.long)
+        mask = torch.tensor(mask_rows, dtype=torch.long)
         ids = ids.to(device)
         mask = mask.to(device)
         with torch.no_grad():
@@ -96,16 +163,30 @@ def _encode_windows(seq: str, tokenizer, model, device,
 
 
 def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
-                          tokenizer, model, device,
+                          tokenizer=None, model=None, device=None,
                           window_size: int = 1022, stride: int = 512,
                           encode_batch: int = 16, save_every: int = 50,
-                          resume: bool = True):
-    """编码整个 FASTA 到缓存目录。
+                          resume: bool = True, packed_path: str = None):
+    """编码整个 FASTA 的全部窗口 CLS 特征。
 
-    每个病毒一个文件 `<safe_name>.pt`，内容：
-      {'cls': [Nwin,H] fp16, 'mean': ..., 'max': ..., 'starts': [[s,e],...]}
-    另有 index.json 记录 病毒名 -> 文件、窗口数。
-    resume=True 时跳过上次已完成（index 中存在且文件在）的病毒。
+    两种落盘格式：
+
+    * 目录格式（默认）—— 每病毒一个 `<idx>.pt` + `index.json`，
+      供 `load_window_cache()` / `FullWindowInteractionData` 使用。
+    * 打包单文件（`packed_path='cache/cls_windows_cache_934.pt'`）——
+      一个 dict `{virus: [Nwin, 2560] 已白化 CLS}`，供 `train.py` / `predict.py`
+      直接 `torch.load`。**这是本仓库 reported runs 使用的格式。**
+
+    参数 `tokenizer` 与 `device` 保留仅为兼容旧调用点；tokenization 已改由
+    `tokenize_gene_ids()` 显式完成。
+
+    用法::
+
+        from vhenet.encode import encode_fasta_to_cache
+        encode_fasta_to_cache("data/virus_sequences.fasta",
+                              "cache/cls_windows_cache_934",
+                              model=model, device=dev,
+                              packed_path="cache/cls_windows_cache_934.pt")
     """
     from vhenet.preprocessing import parse_fasta
     cache = Path(cache_dir)
@@ -127,11 +208,15 @@ def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
     names = sorted(seq_dict.keys())
     print(f"共 {len(names)} 条序列待编码")
 
+    packed = {} if packed_path else None
     model.eval()
     done = 0
     for idx, name in enumerate(names):
         if name in index:
             done += 1
+            if packed is not None:
+                d = torch.load(cache / index[name]["file"], map_location="cpu")
+                packed[name] = d["cls"].float()
             continue
         seq = clean_seq(seq_dict[name])
         if not seq:
@@ -150,6 +235,8 @@ def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
             "starts": spans,
             "seq_len": len(seq),
         }, fn)
+        if packed is not None:
+            packed[name] = cls.float()
         index[name] = {"file": fn.name, "n_windows": cls.shape[0],
                        "seq_len": len(seq)}
         if (idx + 1) % save_every == 0 or idx == len(names) - 1:
@@ -162,6 +249,11 @@ def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
         json.dump(index, f, indent=1)
     total = sum(v["n_windows"] for v in index.values())
     print(f"编码完成: {len(index)} 病毒, {total} 窗口 -> {cache}")
+    if packed is not None:
+        # 注意：packed 里是【未白化】的原始 CLS。train.py/predict.py 期望的是
+        # 已白化特征，因此还需应用 whiten_stats（见 docs/weights.md）。
+        torch.save(packed, packed_path)
+        print(f"打包单文件: {packed_path} ({len(packed)} 病毒, 注意为未白化 CLS)")
     return index
 
 
@@ -190,3 +282,52 @@ def load_window_cache(cache_dir: str, max_viruses_in_ram: int = 200):
         return data
 
     return get, index
+
+
+# --------------------------------------------------------------------------- #
+# CLI：重建窗口 CLS 缓存                                                        #
+# --------------------------------------------------------------------------- #
+def _main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="重建 LucaVirus 窗口 CLS 缓存（每病毒一个 .pt + index.json）。")
+    ap.add_argument("--fasta", default="data/virus_sequences.fasta",
+                    help="输入 FASTA")
+    ap.add_argument("--cache-dir", default="cache/cls_windows_cache_934",
+                    help="输出缓存目录（每病毒一个 .pt）")
+    ap.add_argument("--model-path", default="pretrained/lucaVirus",
+                    help="LucaVirus 模型目录")
+    ap.add_argument("--window", type=int, default=1022, help="窗口长度（碱基）")
+    ap.add_argument("--stride", type=int, default=512, help="滑动步长")
+    ap.add_argument("--batch", type=int, default=16, help="编码批大小")
+    ap.add_argument("--device", default=None,
+                    help="cpu / cuda:0 …（默认自动选择）")
+    ap.add_argument("--packed-path", default=None,
+                    help="额外输出打包单文件 dict{virus:[Nwin,2560]}；"
+                         "train.py / predict.py 读这个格式")
+    a = ap.parse_args()
+
+    from transformers import AutoModel
+
+    if a.device:
+        device = torch.device(a.device)
+    else:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"device = {device}")
+    print(f"加载 LucaVirus: {a.model_path}")
+    model = AutoModel.from_pretrained(a.model_path, trust_remote_code=True)
+    model = model.to(device).eval()
+    for p in model.parameters():
+        p.requires_grad = False
+
+    # tokenizer 不再参与编码（gene 映射由 tokenize_gene_ids 显式完成），
+    # 此处仅为兼容函数签名而传入 None。
+    encode_fasta_to_cache(
+        fasta_path=a.fasta, cache_dir=a.cache_dir, tokenizer=None, model=model,
+        device=device, window_size=a.window, stride=a.stride,
+        encode_batch=a.batch, packed_path=a.packed_path)
+
+
+if __name__ == "__main__":
+    _main()

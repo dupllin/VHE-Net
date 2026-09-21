@@ -1,7 +1,10 @@
 # ---------- 大文件（不入库，见 README「获取权重」） ----------
-pretrained/
-cache/
-checkpoints/
+# 注意：必须写成 `dir/*` 而不是 `dir/`。
+# 用 `dir/` 会把整个目录排除，git 不会进入该目录，后面的
+# `!dir/README.md` 例外因此永远不会生效（占位说明会静默丢失）。
+pretrained/*
+cache/*
+checkpoints/*
 !pretrained/README.md
 !cache/README.md
 !checkpoints/README.md
