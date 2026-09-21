@@ -259,3 +259,41 @@ Only `CLS` carries order information, and only an aggregation that can *weight w
 (the MoE attention) turns that into region attribution. A fixed statistic over windows
 (mean / max / std) stays permutation-invariant.
 
+
+---
+
+## 12. The 70.4 % spike-shuffle figure is checkpoint-independent
+
+Section 11 reports that shuffling the spike CDS flips the top-1 host for 70.4 % of the
+209 bat CoVs. That number was measured on a training run whose checkpoint is no longer
+available, so it was re-measured on the shipped
+`checkpoints/v34jbce_pairwise_ratio10_allneg_8020_spearman/best_model.pt` using the
+same 71 viruses, the same spike coordinates, and the same shuffle seed:
+
+| Metric | Original run | Shipped `best_model.pt` |
+|---|---|---|
+| **spike shuffle → top-1 changed** | **70.4 %** (50/71) | **71.8 %** (51/71) |
+| ORF1ab shuffle → top-1 changed | 98.6 % | 95.8 % |
+| Baseline top-1 agreement | — | **1/71 (1.4 %)** |
+| Per-virus changed/unchanged agreement | — | 40/71 (56.3 %) |
+
+A different checkpoint that agrees on the baseline top-1 for **one virus out of 71**
+still reproduces the effect to within **1.4 percentage points**. The phenomenon is a
+property of the architecture, not of one training run.
+
+Two caveats worth stating in a manuscript:
+
+- **Per-virus attributions do not transfer.** Baseline top-1 agreement is 1.4 %, and
+  per-virus changed/unchanged agreement is 56.3 % (contingency 35/16/15/5), which is
+  chance level given the base rates. Cite the population-level rate, not individual
+  viruses.
+- **Confidence and host prior differ between runs.** On these 209 out-of-distribution
+  viruses the shipped checkpoint is less confident (mean top-1 probability 0.933 vs
+  0.993) and much more *Homo sapiens*-leaning (`P_Homo` mean 0.739 vs 0.411;
+  `P_Homo >= 0.5` for 62/71 vs 29/71 viruses; top-1 diversity 30 vs 39 hosts). This is
+  domain shift, not a bug — the 209 bat CoVs are disjoint from the 934 training viruses.
+
+Reproduction: `2025_9_21_web_VHE_rankBCE/` serves the shipped checkpoint with the full
+sliding-window + whitening pipeline; running the same shuffle through it takes ~35 min
+for all 71 viruses. Per-virus detail is in
+`results/deliverable_20260904/30_spike_shuffle_复现_当前权重/`.
