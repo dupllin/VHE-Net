@@ -1,0 +1,35 @@
+# ---------- 大文件（不入库，见 README「获取权重」） ----------
+pretrained/
+cache/
+checkpoints/
+!pretrained/README.md
+!cache/README.md
+!checkpoints/README.md
+
+# ---------- 输出 ----------
+outputs/
+*.csv
+*.xlsx
+!data/*.csv
+!data/*.xlsx
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---------- 日志 ----------
+*.log
+nohup.out

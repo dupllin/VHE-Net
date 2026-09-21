@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use VHE-Net, please cite this repository."
+title: "VHE-Net: reproducible deep learning for virus-host association ranking"
+authors:
+  - alias: dupllin
+    website: "https://github.com/dupllin"
+type: software
+license: MIT
+repository-code: "https://github.com/dupllin/VHE-Net"
+keywords:
+  - virus-host interaction
+  - protein language model
+  - link prediction
+  - ranking
+  - computational biology
+abstract: >-
+  VHE-Net scores every (virus, host) pair on a fixed 934 x 451 grid and ranks
+  candidate hosts per virus. It couples a frozen LucaVirus protein language
+  model encoder (0.95 B parameters) with learned interaction heads and a
+  niche-weighted training objective.

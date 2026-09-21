@@ -1,0 +1,71 @@
+data:
+  fasta_path: data/virus_sequences.fasta
+  interaction_csv: data/interactions.xlsx
+  similarity_csv: data/host_similarity.csv
+  ids_cache_dir: cache/ids_km_cache_934
+  kmer: 6
+  down_sample_ratio: 0.0909114865
+  train_test_split: 0.8
+  random_state: 42
+  split_by_virus: false
+  val_ratio: 0.0
+  test_ratio: 0.0
+  train_neg_per_virus: 1000
+  imp_lower: 1.0
+  imp_upper: 1.0
+  result_path: outputs/without
+sequence:
+  max_len: 1024
+  window_size: 1022
+  stride: 512
+model:
+  name: ViHGAT_814v6
+  model_path: pretrained/lucaVirus
+  embed_dim: 256
+  dropout: 0.25
+  n_pos_bins: 8
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+  llm_window_tokens: 1024
+  use_host_head: false
+  main_head_inputs: virus_inter
+  use_km_branch: false
+  b_agg_bins: 0
+  cls_only: true
+  freeze_lora: true
+  cls_no_proj: true
+  use_cross_attn: false
+  cross_heads: 4
+  moe_heads: 2
+  attn_type: softmax
+  attn_temp: 1.0
+  whiten_stats: data/whiten_stats.pt
+training:
+  epochs: 200
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  grad_accum_viruses: 2
+  llm_windows_per_virus: 0
+  viruses_per_epoch: 0
+  bce_lambda: 1.0
+  rank_lambda: 1.0
+  host_head_lambda: 0.0
+  entropy_lambda: 0.1
+  bal_lambda: 0.0
+  align_lambda: 1.0
+  align_mode: both
+  coverage_topk: 3
+  true_label_manifest: data/true_labels_manifest.json
+  pos_weight: 1.0
+  bce_clip: 100.0
+  save_epochs: ''
+  early_stopping_patience: 100
+  auc_floor: 0.6
+  early_stop_metric: spearman
+  pr_auc_floor: 0.1
+  save_best_model: true
+  model_save_path: checkpoints/vhe_net_without
+  init_from: ''
+device: cuda:0
+seed: 42
