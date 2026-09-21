@@ -31,22 +31,28 @@ GAP_CHARS = set("-. *\n\r\t")
 # --------------------------------------------------------------------------- #
 # 背景（踩坑记录，务必先读再改）
 #
-# LucaVirusTokenizer 有两个词表模式：'gene'（核苷酸）与 'prot'（蛋白）。
-# `AutoTokenizer.from_pretrained()` 只读取 tokenizer_config.json 里存在的字段，
-# 而该文件 **没有** `vocab_type` 字段，于是构造函数使用默认值 `"gene_prot"`，
-# 其词表把 DNA 字符映射到蛋白字母：
+# LucaVirusTokenizer 有两个词表：'gene'（核苷酸 '1'-'5' -> id 5-9）与
+# 'prot'（蛋白字母 -> id 10+）。选哪个由 `seq_type` 参数决定，而它只在
+# **单字符串** 路径上生效：
 #
-#     '1'->5 '2'->6 '3'->7 '4'->8 '5'->9      <- 核苷酸（gene 词表，正确）
-#     'A'->11 'T'->17 'G'->12 'C'->29         <- 蛋白字母（gene_prot 词表）
+#     tokenizer("GAAT", seq_type="gene")   -> encode_plus()       -> 走 gene  ✅
+#     tokenizer(["GAAT"], seq_type="gene") -> batch_encode_plus() -> 丢掉参数 ❌
 #
-# `_convert_text_to_ids` 里虽然写了 `if seq_type == "gene": text =
-# gene_seq_replace(text)`，但 gene_seq_replace 把 'GAAT' 变成 '4112' 之后，
-# 查表用的仍是 gene_prot 词表 —— 而 '4'/'1'/'2' 恰好也是合法蛋白字符，
-# 所以 DNA 被原样映射成蛋白 token，**不抛任何异常**。实测 seq_type='gene'
-# 与 'prot' 的输出完全相同。
+# 见 tokenization_lucavirus.py:294：
 #
-# 后果：特征全错（跨病毒 cosine 与正确编码相差极大），但下游不会报错。
-# 因此本模块不依赖 tokenizer 的 seq_type 参数，改为显式做 gene 映射。
+#     def batch_encode_plus(self, *args, **kwargs):
+#         kwargs.pop("seq_type", None)          # <-- 直接丢弃
+#
+# 参数被丢弃后，父类的默认路径按 protein 词表逐字符查表，于是 DNA 变成蛋白
+# token，且 **不抛任何异常**：
+#
+#     'GAAT' 正确 -> gene_seq_replace '4112' -> id [8, 5, 5, 6]
+#     'GAAT' 错误 -> 原样查 gene_prot 词表    -> id [12, 11, 11, 17]
+#
+# 实测（真实 1022 bp 窗口）：tok(s) 正确，tok([s]) 错误。
+#
+# 因此本模块不依赖 tokenizer 的 seq_type，改为显式做 gene 映射；
+# 调用方也不要再把窗口攒成 list 一次性喂给 tokenizer。
 _GENE_VOCAB = {"1": 5, "2": 6, "3": 7, "4": 8, "5": 9}
 _DNA_TO_GENE = {"A": "1", "T": "2", "U": "2", "C": "3", "G": "4"}
 _PAD_ID, _CLS_ID, _SEP_ID = 0, 2, 3

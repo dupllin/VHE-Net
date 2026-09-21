@@ -77,19 +77,29 @@ verify_gene_encoding("cache/ids_km_cache_934", "data/virus_sequences.fasta")
 
 ## ⚠️ 重建时的两个坑
 
-### 1. 不要用 `tokenizer(..., seq_type="gene")` 生成 id
+### 1. 不要把窗口攒成 list 喂给 tokenizer
 
-`AutoTokenizer.from_pretrained("pretrained/lucaVirus")` 读不到 `vocab_type`
-（`tokenizer_config.json` 里没有该字段），构造函数回退到默认 `"gene_prot"`，
-于是 `seq_type` 参数被**静默忽略**，DNA 字符被当作蛋白字母 tokenize：
+`LucaVirusTokenizer` 只在**单字符串**路径上尊重 `seq_type`。传 list 会走
+`batch_encode_plus`，而该方法第一件事就是把参数丢掉
+（`tokenization_lucavirus.py:294`：`kwargs.pop("seq_type", None)`）：
+
+```python
+tokenizer("GAAT",  seq_type="gene")   -> gene 映射生效  ✅
+tokenizer(["GAAT"], seq_type="gene")  -> 参数被丢弃     ❌
+```
+
+参数丢失后按 protein 词表逐字符查表，DNA 直接变成蛋白 token：
 
 ```
-正确（gene 词表）: 'GAAT' -> gene_seq_replace '4112' -> token id [8, 5, 5, 6]
-错误（gene_prot）: 'GAAT' -> 原样查表           -> token id [12, 11, 11, 17]
+正确（gene）: 'GAAT' -> gene_seq_replace '4112' -> token id [8, 5, 5, 6]
+错误（batch）: 'GAAT' -> 原样查表              -> token id [12, 11, 11, 17]
 ```
 
 **不会抛异常**，但特征全错。`vhenet.encode.tokenize_gene_ids()` 显式完成
 gene 映射，不经过 tokenizer；两个缓存构建函数都已改用它。
+
+> 注：原始 `encode_ids_to_cache` 是逐条单字符串 tokenize 的，走的是正确路径，
+> 所以 **cached 的 ids 一直是对的**。这个坑只在批量喂 list 时触发。
 
 ### 2. `cls_windows_cache_934.pt` 里是**已白化**的特征
 

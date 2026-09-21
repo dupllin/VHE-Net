@@ -10,27 +10,46 @@ run inference or reproduce the reported numbers:
 | `cache/cls_windows_cache_934.pt` | 360 MB | no | training and predict |
 | `checkpoints/vhe_net_*/{best,last}_model.pt` | 4 x 3.6 GB | no | predict only |
 
+**These artefacts are not hosted in this repository or in a GitHub Release.**
+GitHub caps release assets at 2 GB per file, and `pretrained/lucaVirus/model.safetensors`
+alone is 3.54 GiB, so no single-file upload can carry it. Request access from the
+corresponding author, or rebuild the artefacts with **Option B** below.
+
 ---
 
-## Option A - download the prepared artefacts
+## Expected layout
 
-```bash
-python - <<'PY'
-import urllib.request, zipfile, io, pathlib
-BASE = "https://github.com/dupllin/VHE-Net/releases/download/v1.0"
-for name in ["lucaVirus.zip", "cache.zip", "checkpoints.zip"]:
-    print("downloading", name)
-    data = urllib.request.urlopen(f"{BASE}/{name}").read()
-    zipfile.ZipFile(io.BytesIO(data)).extractall(".")
-print("done")
-PY
+Place the artefacts so the tree looks like this — `verify_reproduce.py` checks exactly
+these paths:
+
+```
+VHE-Net/
+├── pretrained/
+│   └── lucaVirus/                    <- 3.6 GB, from B1
+├── cache/
+│   ├── ids_km_cache_934/             <- 654 MB, from B2
+│   └── cls_windows_cache_934.pt      <- 360 MB, from B3
+└── checkpoints/
+    ├── vhe_net_with_weight/
+    │   └── best_model.pt
+    └── vhe_net_without_weight/
+        └── best_model.pt
 ```
 
-Verify afterwards:
+Check it with:
 
 ```bash
 python verify_reproduce.py
 ```
+
+---
+
+## Option A - request the prepared artefacts
+
+Contact the corresponding author for `lucaVirus.zip`, `cache.zip` and
+`checkpoints.zip`. They cannot be distributed through GitHub Releases; any transfer
+must use a channel without a 2 GB per-file cap (institutional storage, Zenodo,
+Hugging Face, or a chunked upload).
 
 ---
 

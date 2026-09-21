@@ -17,11 +17,12 @@
 因此 v2 只缓存 token ids（tokenizer 输出，纯 CPU，快），下游用冻结的
 LucaVirus 核苷酸嵌入表 + 可训练 token CNN 提取内容特征。
 
-⚠️ gene 模式：LucaVirus tokenizer 的 `seq_type` 参数会被静默忽略
-（`AutoTokenizer.from_pretrained` 未传入 `vocab_type`，回退默认 `gene_prot`），
-DNA 字符会被原样当作蛋白字母 tokenize，不报错但特征全错。
-本模块因此不调用 tokenizer，改用 `vhenet.encode.tokenize_gene_ids()` 显式做
-gene 映射；`vhenet.encode.verify_gene_encoding()` 可用于校验已有缓存。
+⚠️ gene 模式：LucaVirus tokenizer 只在**单字符串**路径上尊重 `seq_type`。
+传 list 会走 `batch_encode_plus`，该方法直接 `kwargs.pop("seq_type", None)`
+（见 tokenization_lucavirus.py:294），DNA 于是被按 protein 词表逐字符查表，
+不报错但 id 全错。本模块因此不依赖 tokenizer，改用
+`vhenet.encode.tokenize_gene_ids()` 显式做 gene 映射（不传 list 也不受影响）；
+`vhenet.encode.verify_gene_encoding()` 可用于校验已有缓存。
 """
 from __future__ import annotations
 

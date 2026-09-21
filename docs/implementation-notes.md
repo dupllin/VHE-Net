@@ -157,33 +157,38 @@ describing it as 3 B is incorrect and trivially falsifiable.
 
 ---
 
-## 9. Encoding DNA for LucaVirus: `seq_type` is silently ignored
+## 9. Encoding DNA for LucaVirus: the tokenizer's batch path drops `seq_type`
 
-If you extend the pipeline to new sequences, **do not** tokenize with
-`tokenizer(text, seq_type="gene")`. It produces a valid-looking integer tensor and
-raises no error, but the ids are wrong.
+If you extend the pipeline to new sequences, **do not** pass a list of windows to the
+tokenizer. It produces a valid-looking integer tensor and raises no error, but the ids
+are wrong.
 
-Why. `pretrained/lucaVirus/tokenizer_config.json` has no `vocab_type` field, so
-`AutoTokenizer.from_pretrained()` falls back to the constructor default
-`"gene_prot"`. That vocabulary maps DNA characters to **protein** letters:
+`tokenization_lucavirus.py:294`:
 
-```
-'1'->5  '2'->6  '3'->7  '4'->8  '5'->9        <- nucleotide ids (gene vocab)
-'A'->11 'T'->17 'G'->12 'C'->29               <- amino-acid ids (gene_prot vocab)
-```
-
-`_convert_text_to_ids` does execute `if seq_type == "gene": text = gene_seq_replace(text)`,
-turning `'GAAT'` into `'4112'` — but the lookup then uses the `gene_prot` vocabulary,
-and `'4' '1' '1' '2'` are also legal protein characters, so the DNA passes through
-unchanged. Measured consequence:
-
-```
-tokenizer(seq, seq_type='gene')  -> [2, 11, 17, 12, 17, 11, ...]   = [CLS] G A A T A
-tokenizer(seq, seq_type='prot')  -> [2, 11, 17, 12, 17, 11, ...]   identical
-official ids cache               -> [2,  8,  5,  5,  6,  5, ...]   = [CLS] 4 1 1 2 1
+```python
+def batch_encode_plus(self, *args, **kwargs):
+    kwargs.pop("seq_type", None)          # discarded
+    kwargs.pop("text_pair", None)
 ```
 
-**Fix.** `vhenet/encode.py` now does the gene mapping explicitly and never calls the
+So `seq_type` survives only on the single-string path:
+
+```python
+tokenizer("GAAT",  seq_type="gene")    -> encode_plus()       -> gene mapping runs
+tokenizer(["GAAT"], seq_type="gene")   -> batch_encode_plus() -> parameter dropped
+```
+
+With the parameter gone, the parent class looks the characters up in the `gene_prot`
+vocabulary, where DNA letters are valid protein symbols, so they pass through as
+amino-acid tokens. Measured on a real 1022 bp window:
+
+```
+tokenizer(seq,  seq_type="gene")  -> [2, 5, 6, 8, 6, 5, 6, 8, 6, 8, 5, 8]   correct
+tokenizer([seq], seq_type="gene") -> [2, 11, 17, 12, 17, 11, 17, 12, ...]   wrong
+tokenize_gene_ids(seq)            -> [2, 5, 6, 8, 6, 5, 6, 8, 6, 8, 5, 8]   correct
+```
+
+**Fix.** `vhenet/encode.py` does the gene mapping explicitly and never calls the
 tokenizer:
 
 ```python
@@ -199,12 +204,14 @@ from vhenet.encode import verify_gene_encoding
 verify_gene_encoding("cache/ids_km_cache_934", "data/virus_sequences.fasta")
 ```
 
-It re-derives tokens for a few (virus, window) pairs and compares them byte for byte;
-the shipped caches return `6/6 完全一致`.
+It re-derives tokens for a few (virus, window) pairs and compares them element by
+element; the shipped caches return `6/6 完全一致`.
 
-**Scope.** The reported runs are unaffected: `train.py` and `predict.py` read the
-pre-computed `ids`/`cls` caches and never invoke the tokenizer. This matters only when
-rebuilding a cache or encoding new sequences.
+**Scope.** The reported runs are unaffected. `train.py` and `predict.py` read the
+pre-computed `ids`/`cls` caches and never invoke the tokenizer, and the original
+`encode_ids_to_cache` tokenized one string at a time — which is the correct path —
+so the caches it produced are valid. This matters when encoding new sequences through
+a code path that batches windows into a list.
 
 ---
 
