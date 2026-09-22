@@ -49,8 +49,9 @@ pretrained/lucaVirus/         frozen 0.95 B encoder
         |
         v
 (5) prediction                 predict.py
-        |   scores all 451 hosts for every virus in BOTH folds
-        |   -> 842,468 rows; de-duplicate before quoting a 421,234-row grid
+        |   scores all 451 hosts for every virus -> 421,234-row grid
+        |   (the pair-level split puts every virus in both folds, so the
+        |    internal loop visits each pair twice; predict.py de-duplicates)
         v
     outputs/predictions.csv
         |
@@ -105,7 +106,6 @@ This is also why `train.py` does not accept raw sequences as input.
 | Windows per virus | 1022 nt, stride 512, tail-anchored so the last window ends at the 3' end |
 | Trainable parameters | **2,550,017** (= 2,218,241 model + 331,776 `SelfAttnPoolMoE`), 0.27 % of the 0.95 B encoder |
 | Encoder parameters | **950,889,767** (frozen, incl. 96 LoRA tensors = 1,966,080) |
-| `predict.py` output rows | **842,468** (934 viruses x 451 hosts x 2 folds; de-duplicate for the 421,234 grid) |
 | train positives / val positives | **2,998 / 797** |
 | Viruses / hosts | **934 / 451** |
 | Held-out pool | **387,838** |

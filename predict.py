@@ -100,6 +100,15 @@ def main(config_path, ckpt_path, out_prefix, split_by_virus=None, cls_cache="cac
                 for h in range(len(host_to_id)):
                     all_rows.append((virus, id_to_host[h], h, float(p[h]), int(h in pos), split))
     out = pd.DataFrame(all_rows, columns=["Virus", "Host", "Host_ID", "Probability", "Label", "Split"])
+    # 该划分是 pair-level（split_by_virus=false），因此 934 个病毒在两个 fold 里都出现，
+    # 上面的循环会为每个 (Virus, Host) 产出两行。全量网格是 421,234 个**唯一**配对，
+    # 所以这里按键去重（保留 val 行：val 行不带训练 fold 的正例标签，语义更干净）。
+    n_before = len(out)
+    if out["Split"].nunique() > 1:
+        out = (out.sort_values("Split", ascending=False)      # "val" > "train"
+                  .drop_duplicates(subset=["Virus", "Host"], keep="first")
+                  .reset_index(drop=True))
+        print(f"去重: {n_before:,} -> {len(out):,} 行（pair-level 划分使每个病毒出现在两个 fold）")
     if out_prefix:
         outp = resolve(out_prefix); outp.parent.mkdir(parents=True, exist_ok=True)
         out.to_csv(outp, index=False)
