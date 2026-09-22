@@ -103,11 +103,43 @@ gene 映射，不经过 tokenizer；两个缓存构建函数都已改用它。
 
 ### 2. `cls_windows_cache_934.pt` 里是**已白化**的特征
 
-官方构建脚本先做白化再落盘：
+白化只在**构建缓存时**施加一次：
 
 ```python
-wh = (cls - wh_mean) @ wh_W        # wh_mean / wh_W 来自 data/whiten_stats.pt
+wf = (cls - wh_mean) @ wh_W        # wh_mean / wh_W 来自 data/whiten_stats.pt
 ```
 
-而 `encode_fasta_to_cache(packed_path=...)` 写出的是**未白化**的原始 CLS。
-若用它替换官方缓存，需要自行套用 `data/whiten_stats.pt` 的白化矩阵。
+`train.py` / `predict.py` 用 `whiten_stats=None` 构造模型，正是因为缓存已经白化
+—— 再白化一次会破坏特征。
+
+**实测判据**（209 病毒缓存，60 病毒 / 1,562 窗口）：
+
+| 量 | 值 | 说明 |
+|---|---|---|
+| 缓存原值 跨病毒 cosine | **0.0026** | 已白化应 ≈0 |
+| 反白化后 跨病毒 cosine | **0.699** | 恢复到原始 CLS 水平 |
+
+原始 LucaVirus CLS 强共线（跨病毒 cosine 0.69–0.83），白化是让不同病毒的窗口
+可比的关键步骤。反白化能准确还原出 0.70，反证缓存里存的确实是白化后的向量。
+
+**构建方式**（`whiten_stats` 默认打开）：
+
+```bash
+python -m vhenet.encode --fasta data/virus_sequences.fasta \
+    --cache-dir cache/cls_windows_cache_934 \
+    --packed-path cache/cls_windows_cache_934.pt \
+    --whiten-stats data/whiten_stats.pt
+```
+
+若要写未白化的原始 CLS，用 `--whiten-stats none`，此后必须把同一份统计量传给
+模型的 `whiten_stats=`。**两种做法不要同时用。**
+
+**核对已有缓存**（不依赖任何文档）：
+
+```python
+import torch
+from vhenet.encode import verify_cache_whitening
+stats = torch.load("data/whiten_stats.pt", map_location="cpu")
+verify_cache_whitening("cache/cls_windows_cache_934.pt", stats, n_virus=60)
+# => 已白化 (whitened)：原值 cosine ~0.00，反白化后 ~0.70
+```

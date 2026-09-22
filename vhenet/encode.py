@@ -168,11 +168,36 @@ def _encode_windows(seq: str, tokenizer, model, device,
             spans)
 
 
+def apply_whitening(cls: torch.Tensor, whiten_stats) -> torch.Tensor:
+    """对窗口 CLS 做白化：`(cls - mean) @ W`。
+
+    白化是本流程**唯一**去除跨病毒共线主分量的步骤，必须在**构建 CLS 缓存时**
+    施加一次。实测证据（209 病毒官方缓存）：原始 CLS 的跨病毒 cosine 为
+    0.69-0.83，白化后降到 0.02-0.09；把缓存反白化（`X @ W^{-1} + mean`）后
+    cosine 回升到 0.765，确认缓存存的确实是白化后的向量。
+
+    ⚠️ `train.py` / `predict.py` 用 `whiten_stats=None` 构造模型，正是因为缓存
+    已白化 —— 再白化一次会破坏特征。若缓存未白化（本函数的
+    `whiten_stats=None` 分支），必须在构造模型时传入同样的统计量。
+
+    whiten_stats: `{"mean": [H], "W": [H, H]}` 或 None。
+    """
+    if whiten_stats is None:
+        return cls
+    mean = torch.as_tensor(whiten_stats["mean"], dtype=torch.float32)
+    W = torch.as_tensor(whiten_stats["W"], dtype=torch.float32)
+    if W.shape[0] != cls.shape[-1]:
+        raise ValueError(
+            f"白化矩阵维度 {tuple(W.shape)} 与 CLS 维度 {cls.shape[-1]} 不符")
+    return (cls.float() - mean) @ W
+
+
 def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
                           tokenizer=None, model=None, device=None,
                           window_size: int = 1022, stride: int = 512,
                           encode_batch: int = 16, save_every: int = 50,
-                          resume: bool = True, packed_path: str = None):
+                          resume: bool = True, packed_path: str = None,
+                          whiten_stats=None):
     """编码整个 FASTA 的全部窗口 CLS 特征。
 
     两种落盘格式：
@@ -180,8 +205,15 @@ def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
     * 目录格式（默认）—— 每病毒一个 `<idx>.pt` + `index.json`，
       供 `load_window_cache()` / `FullWindowInteractionData` 使用。
     * 打包单文件（`packed_path='cache/cls_windows_cache_934.pt'`）——
-      一个 dict `{virus: [Nwin, 2560] 已白化 CLS}`，供 `train.py` / `predict.py`
+      一个 dict `{virus: [Nwin, 2560] CLS}`，供 `train.py` / `predict.py`
       直接 `torch.load`。**这是本仓库 reported runs 使用的格式。**
+
+    ⚠️ **白化：** 传入 `whiten_stats` 时，本函数在写入前对 CLS 施加
+    `(cls - mean) @ W`，产出的缓存与 reported runs 使用的
+    `cache/cls_windows_cache_934.pt` 同构，可直接被 `train.py` / `predict.py`
+    （它们用 `whiten_stats=None`）消费。**不传则写入原始未白化 CLS**，此时
+    必须在构造模型时把同一份统计量传给 `whiten_stats=`，否则特征分布与训练
+    时不一致。两种做法都不要同时用，否则等于白化两次。
 
     参数 `tokenizer` 与 `device` 保留仅为兼容旧调用点；tokenization 已改由
     `tokenize_gene_ids()` 显式完成。
@@ -189,14 +221,17 @@ def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
     用法::
 
         from vhenet.encode import encode_fasta_to_cache
+        stats = torch.load("data/whiten_stats.pt", map_location="cpu")
         encode_fasta_to_cache("data/virus_sequences.fasta",
                               "cache/cls_windows_cache_934",
                               model=model, device=dev,
+                              whiten_stats=stats,          # 与 reported runs 一致
                               packed_path="cache/cls_windows_cache_934.pt")
     """
     from vhenet.preprocessing import parse_fasta
     cache = Path(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
+    print(f"白化: {'启用 (cls-mean)@W' if whiten_stats is not None else '关闭（写入原始 CLS）'}")
 
     index_file = cache / "index.json"
     index = {}
@@ -233,6 +268,7 @@ def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
         except Exception as exc:  # 单条失败不阻塞整体
             print(f"  [skip] {name}: {exc}")
             continue
+        cls = apply_whitening(cls, whiten_stats)
         fn = cache / f"{idx:04d}.pt"
         torch.save({
             "cls": cls.cpu(),
@@ -256,10 +292,12 @@ def encode_fasta_to_cache(fasta_path: str, cache_dir: str,
     total = sum(v["n_windows"] for v in index.values())
     print(f"编码完成: {len(index)} 病毒, {total} 窗口 -> {cache}")
     if packed is not None:
-        # 注意：packed 里是【未白化】的原始 CLS。train.py/predict.py 期望的是
-        # 已白化特征，因此还需应用 whiten_stats（见 docs/weights.md）。
+        # packed 与目录格式内容一致：传了 whiten_stats 就是已白化，否则是原始 CLS。
+        # train.py / predict.py 用 whiten_stats=None 构造模型，因此它们期望的就是
+        # 【已白化】缓存 —— 构建时请传 whiten_stats（见函数 docstring）。
         torch.save(packed, packed_path)
-        print(f"打包单文件: {packed_path} ({len(packed)} 病毒, 注意为未白化 CLS)")
+        tag = "已白化" if whiten_stats is not None else "未白化原始"
+        print(f"打包单文件: {packed_path} ({len(packed)} 病毒, {tag} CLS)")
     return index
 
 
@@ -293,6 +331,72 @@ def load_window_cache(cache_dir: str, max_viruses_in_ram: int = 200):
 # --------------------------------------------------------------------------- #
 # CLI：重建窗口 CLS 缓存                                                        #
 # --------------------------------------------------------------------------- #
+def verify_cache_whitening(cls_cache, whiten_stats, n_virus: int = 60,
+                           verbose: bool = True):
+    """判定一份窗口 CLS 缓存是【已白化】还是【原始未白化】。
+
+    判据（实测标定，来自 delivered runs 的 209 病毒缓存）：
+
+    * 已白化：跨病毒 CLS cosine ≈ 0.02-0.09，各维均值 ≈ 0
+    * 未白化：跨病毒 CLS cosine ≈ 0.69-0.83（LucaVirus CLS 强共线）
+
+    辅助判据：对缓存做反白化 `X @ W^{-1} + mean`；若缓存本已白化，cosine 会
+    显著**升高**（实测 0.037 -> 0.765）；若缓存是原始的，反白化会让 cosine
+    **降低**并放大范数。
+
+    参数
+    ----
+    cls_cache : str | Path | dict
+        打包单文件路径，或已 `torch.load` 的 `{virus: [Nwin, 2560]}`。
+    whiten_stats : dict
+        `{"mean": [H], "W": [H, H]}`。
+
+    返回
+    ----
+    dict，含 `is_whitened`（bool）、`cosine_as_is`、`cosine_unwhitened`、
+    `mean_abs` 及判据文本。
+    """
+    data = (torch.load(str(cls_cache), map_location="cpu", weights_only=False)
+            if isinstance(cls_cache, (str, Path)) else cls_cache)
+    keys = sorted(data)[:n_virus]
+    X = torch.cat([data[k].float() for k in keys], dim=0)
+    if X.shape[0] < 2:
+        raise ValueError("样本不足，至少需要 2 个窗口向量")
+
+    def cos(Z):
+        V = Z / Z.norm(dim=1, keepdim=True).clamp_min(1e-8)
+        C = V @ V.T
+        n = C.shape[0]
+        return C[~torch.eye(n, dtype=bool)].mean().item()
+
+    mean = torch.as_tensor(whiten_stats["mean"], dtype=torch.float32)
+    W = torch.as_tensor(whiten_stats["W"], dtype=torch.float32)
+    c_raw = cos(X)
+    X_un = X @ torch.linalg.pinv(W) + mean
+    c_un = cos(X_un)
+    mean_abs = X.mean(dim=0).abs().mean().item()
+
+    # 已白化 <=> 原始 cosine 低 且 反白化后 cosine 升高
+    is_whitened = (c_raw < 0.35) and (c_un > c_raw)
+
+    if verbose:
+        print(f"缓存白化状态判定（{len(keys)} 病毒, {X.shape[0]} 窗口）")
+        print(f"  as-is   跨病毒 cosine = {c_raw:.4f}   |mean| = {mean_abs:.4f}")
+        print(f"  反白化后 跨病毒 cosine = {c_un:.4f}")
+        print(f"  参考: 已白化 ~0.02-0.09（反白化后升高）| "
+              f"未白化 ~0.69-0.83（反白化后降低）")
+        print(f"  => {'已白化 (whitened)' if is_whitened else '原始未白化 (raw)'}")
+        if is_whitened:
+            print("     与 train.py / predict.py 的 whiten_stats=None 一致 ✅")
+        else:
+            print("     ⚠️ train.py / predict.py 默认按已白化消费，会不一致；"
+                  "请构建时传 whiten_stats，或构造模型时传同一统计量")
+
+    return {"is_whitened": is_whitened, "cosine_as_is": c_raw,
+            "cosine_unwhitened": c_un, "mean_abs": mean_abs,
+            "n_windows": int(X.shape[0])}
+
+
 def _main() -> None:
     import argparse
 
@@ -312,6 +416,9 @@ def _main() -> None:
     ap.add_argument("--packed-path", default=None,
                     help="额外输出打包单文件 dict{virus:[Nwin,2560]}；"
                          "train.py / predict.py 读这个格式")
+    ap.add_argument("--whiten-stats", default="data/whiten_stats.pt",
+                    help="白化统计 .pt（含 mean/W）。reported runs 的缓存是"
+                         "已白化的，因此默认施加；传 'none' 写入原始 CLS")
     a = ap.parse_args()
 
     from transformers import AutoModel
@@ -321,6 +428,18 @@ def _main() -> None:
     else:
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"device = {device}")
+
+    whiten_stats = None
+    if a.whiten_stats and a.whiten_stats.lower() != "none":
+        ws = Path(a.whiten_stats)
+        if not ws.is_file():
+            raise FileNotFoundError(
+                f"白化统计不存在: {ws}（传 --whiten-stats none 可写入原始 CLS）")
+        st = torch.load(ws, map_location="cpu", weights_only=False)
+        whiten_stats = {"mean": st["mean"].float(), "W": st["W"].float()}
+        print(f"白化统计: {ws}  mean{tuple(whiten_stats['mean'].shape)} "
+              f"W{tuple(whiten_stats['W'].shape)}")
+
     print(f"加载 LucaVirus: {a.model_path}")
     model = AutoModel.from_pretrained(a.model_path, trust_remote_code=True)
     model = model.to(device).eval()
@@ -332,7 +451,8 @@ def _main() -> None:
     encode_fasta_to_cache(
         fasta_path=a.fasta, cache_dir=a.cache_dir, tokenizer=None, model=model,
         device=device, window_size=a.window, stride=a.stride,
-        encode_batch=a.batch, packed_path=a.packed_path)
+        encode_batch=a.batch, packed_path=a.packed_path,
+        whiten_stats=whiten_stats)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ This repository contains the complete, self-contained code and data needed to
 | | |
 |---|---|
 | Backbone encoder | **LucaVirus**, 0.95 B params, 12 layers, hidden 2560 (**frozen**, incl. LoRA) |
-| Trainable modules | aggregation heads + interaction layers + classifier + `SelfAttnPoolMoE` (**~332 K params**) |
+| Trainable modules | aggregation heads + interaction layers + classifier + `SelfAttnPoolMoE` (**2,550,017 params**, 0.27 % of the encoder) |
 | Objective | `BCE + per-virus softmax ranking loss + entropy + alignment` |
 | Grid | 934 viruses x 451 hosts = **421,234 pairs** |
 | Sampling | strict **1:10** positives:negatives, 41,745 pairs |
@@ -179,8 +179,12 @@ These are easy to get wrong when reading the code; they are documented explicitl
 1. **The protein language model is frozen, LoRA included.**
    `freeze_lora=true` freezes both the LucaVirus backbone *and* all 96 LoRA tensors.
    Only the aggregation heads, interaction layers, classifier and `SelfAttnPoolMoE`
-   (~332 K params) are trained. Please describe this as a *frozen encoder*, **not** as
-   a fine-tuned LucaVirus.
+   are trained: **2,550,017 parameters** (2,218,241 in the model + 331,776 in
+   `SelfAttnPoolMoE`), i.e. **0.27 %** of the 950,889,767-parameter encoder. An earlier
+   README quoted "~332 K", which is the `SelfAttnPoolMoE` module alone and understates
+   the trainable set by 7.7x. Please describe this as a *frozen encoder*, **not** as a
+   fine-tuned LucaVirus — the encoder is not merely frozen, it is never even executed
+   during training or inference, because both read pre-computed CLS features.
 
 2. **`importance score` is fully determined by the label.**
    `importance_score == 20.0` for every positive pair (a single unique value) and lies in

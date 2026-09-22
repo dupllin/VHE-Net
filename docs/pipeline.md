@@ -24,16 +24,18 @@ pretrained/lucaVirus/         frozen 0.95 B encoder
         |
         v
 (3) sequence encoding          vhenet/encode.py :: window_starts(len, 1022, 512)
-        |   ~59 windows per virus, each 1022 nt
-        |   LucaVirus -> CLS feature (2560-d)
-        |   whitening:  wf = (cls - mean) @ W        (data/whiten_stats.pt)
+        |   35,160 windows total (mean 37.6, median 15 per virus), each 1022 nt
+        |   LucaVirus -> one 2560-d CLS feature per window
+        |   whitening is applied HERE, in the cache builder:
+        |       wf = (cls - mean) @ W    (whiten_stats= -> data/whiten_stats.pt)
         v
-    cache/cls_windows_cache_934.pt
+    cache/cls_windows_cache_934.pt     <- stores ALREADY-WHITENED vectors
         |
         v
 (4) training                   train.py, vhenet/model.py
         |   frozen: llm.* and all 96 LoRA tensors
-        |   trained: aggregation + interaction + classifier + SelfAttnPoolMoE (332 K)
+        |   trained: aggregation + interaction + classifier + SelfAttnPoolMoE
+        |            (2,550,017 tensors handed to AdamW = 0.27 % of the encoder)
         |
         |   L = bce_lambda   * weighted_bce(logits, y, w, clip)
         |     + rank_lambda  * per_virus_softmax_loss(logits, y, w)
@@ -47,7 +49,8 @@ pretrained/lucaVirus/         frozen 0.95 B encoder
         |
         v
 (5) prediction                 predict.py
-        |   scores all 421,234 pairs for both splits
+        |   scores all 451 hosts for every virus in BOTH folds
+        |   -> 842,468 rows; de-duplicate before quoting a 421,234-row grid
         v
     outputs/predictions.csv
         |
@@ -97,6 +100,12 @@ This is also why `train.py` does not accept raw sequences as input.
 | Sampled negatives | **37,950** = `int(417439 * 0.0909114865)` |
 | Strict 1:10 subset | **41,745** |
 | train / val | **33,396 / 8,349** |
+| train positives / val positives | **2,998 / 797** |
+| Windows (total / mean per virus) | **35,160 / 37.6** (median 15, max 458) |
+| Windows per virus | 1022 nt, stride 512, tail-anchored so the last window ends at the 3' end |
+| Trainable parameters | **2,550,017** (= 2,218,241 model + 331,776 `SelfAttnPoolMoE`), 0.27 % of the 0.95 B encoder |
+| Encoder parameters | **950,889,767** (frozen, incl. 96 LoRA tensors = 1,966,080) |
+| `predict.py` output rows | **842,468** (934 viruses x 451 hosts x 2 folds; de-duplicate for the 421,234 grid) |
 | train positives / val positives | **2,998 / 797** |
 | Viruses / hosts | **934 / 451** |
 | Held-out pool | **387,838** |

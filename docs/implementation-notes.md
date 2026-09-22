@@ -27,11 +27,27 @@ freeze_lora=true: 冻结 96 个 LoRA 参数张量，只训聚合头/分类器
 ```
 
 **Consequence.** The trainable set is `host_rep_for`, `virus_interact`, `host_interact`,
-`classifier` and `SelfAttnPoolMoE` - about 332 K parameters out of ~949 M.
+`classifier` and `SelfAttnPoolMoE`. Measured on the shipped checkpoint:
+
+| Component | Parameters |
+|---|---|
+| `SelfAttnPoolMoE` (`ckpt["moe"]`, 19 tensors) | 331,776 |
+| `ckpt["model"]` excluding the frozen `llm.*` and the `sim_matrix` buffer | 2,218,241 |
+| **total handed to AdamW** | **2,550,017** |
+| encoder `llm.*` (304 tensors), frozen | 946,194,688 |
+| of which LoRA (96 tensors), injected but frozen | 1,966,080 |
+| `sim_matrix` buffer, not a parameter | 203,401 |
+
+So the trainable fraction is **2,550,017 / 950,889,767 = 0.27 %**. An earlier version of
+this file said "about 332 K", which is the `SelfAttnPoolMoE` module alone and understates
+the trainable set by 7.7x. Note also that `llm_proj` (656,128 parameters) sits in the
+checkpoint but is unreachable on the live path, because `cls_no_proj=true` makes
+`encode_llm_windows` return before it is called.
 
 **Wording.** Describe the model as using a *frozen* LucaVirus encoder. Do not claim that
 LucaVirus was fine-tuned, and do not describe the LoRA adapters as trained - they are
-injected but frozen.
+injected but frozen. Stronger still: during training and inference the encoder is never
+executed at all, because both read pre-computed CLS features from the cache.
 
 ---
 
@@ -297,3 +313,69 @@ Reproduction: `2025_9_21_web_VHE_rankBCE/` serves the shipped checkpoint with th
 sliding-window + whitening pipeline; running the same shuffle through it takes ~35 min
 for all 71 viruses. Per-virus detail is in
 `results/deliverable_20260904/30_spike_shuffle_复现_当前权重/`.
+
+---
+
+## 13. Whitening happens once, in the cache builder — not inside the model
+
+This is the single easiest thing to get wrong in this repository, because the code,
+the config and the documentation each suggested a different answer.
+
+**What the reported models actually do.** The whitening transform
+
+```
+wf = (cls - mean) @ W
+```
+
+is applied **once, when the window CLS cache is built**. `cache/cls_windows_cache_934.pt`
+therefore stores *already-whitened* 2560-d vectors, and `train.py` / `predict.py`
+correctly pass `whiten_stats=None` — whitening a second time would destroy the features.
+
+**Measured proof** (delivered 209-virus cache, `verify_cache_whitening`,
+60 viruses / 1,562 windows):
+
+| Quantity | Value | Expected for |
+|---|---|---|
+| cross-virus cosine, as stored | **0.0026** | whitened (≈0) |
+| cross-virus cosine after un-whitening (`X @ W⁻¹ + mean`) | **0.699** | raw |
+| mean abs per-dimension value, as stored | 0.029 | whitened (≈0) |
+
+Raw LucaVirus CLS is strongly collinear — cross-virus cosine 0.69 (934 viruses) and
+0.83 (209 bat CoVs) — and whitening is what makes windows from different viruses
+comparable. Un-whitening the cache restores exactly that 0.70 cosine, which is the
+positive control: it shows the stored vectors are the whitened ones, not raw ones.
+
+**Why the code looked like it disagreed.** Two features of the shipped code are
+deliberately misleading if read alone:
+
+1. `train.py:241` and `predict.py:68` hard-code `whiten_stats=None`, discarding
+   `configs/vhe_net_with_weight.yaml:43`. That is **correct** for a pre-whitened cache.
+2. The whitening call sites (`vhenet/model.py:296`, `:318`) live inside
+   `encode_llm_windows()`, which `train.py` / `predict.py` never call — they apply
+   `model.llm_out` directly to cached CLS. Those call sites are for the alternative
+   workflow where you pass raw CLS and let the model whiten, and they must stay unused
+   when the cache is pre-whitened.
+
+**The one real defect this exposed.** The repository's own cache builder used to write
+*raw* CLS, so a cache rebuilt with the documented command fed raw features to a model
+that assumed whitened ones. Fixed by making whitening an explicit builder step that
+defaults to on:
+
+```bash
+python -m vhenet.encode --fasta data/virus_sequences.fasta \
+    --cache-dir cache/cls_windows_cache_934 \
+    --packed-path cache/cls_windows_cache_934.pt \
+    --whiten-stats data/whiten_stats.pt
+```
+
+`encode_fasta_to_cache(..., whiten_stats=stats)` applies the transform before writing;
+omitting it writes raw CLS and then requires passing the same `whiten_stats` to the
+model. **Never both.** To check a cache you already have:
+
+```python
+from vhenet.encode import verify_cache_whitening
+verify_cache_whitening("cache/cls_windows_cache_934.pt", stats, n_virus=60)
+```
+
+It reports `is_whitened`, the as-stored cosine, and the un-whitened cosine, so the
+answer does not depend on reading this file.

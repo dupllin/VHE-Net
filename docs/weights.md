@@ -75,46 +75,75 @@ vocab.json
 > ```python
 > from transformers import AutoModel
 > m = AutoModel.from_pretrained("pretrained/lucaVirus", trust_remote_code=True)
-> print(sum(p.numel() for p in m.parameters()))   # 944,227,840 (encoder only)
+> print(sum(p.numel() for p in m.parameters()))   # 950,889,767
 > ```
+>
+> The measured value is **950,889,767**. An earlier version of this file also quoted
+> "944,227,840 (encoder only)"; that number is not reproducible and has been removed.
 
 ### B2. k-mer id cache
 
 ```bash
-python - <<'PY'
-import yaml
-from vhenet.encode_ids import build_ids_cache
-cfg = yaml.safe_load(open("configs/vhe_net_with_weight.yaml"))
-build_ids_cache(cfg["data"]["fasta_path"], "cache/ids_km_cache_934", k=6)
-PY
+python -m vhenet.encode_ids --fasta data/virus_sequences.fasta \
+    --cache-dir cache/ids_km_cache_934 --kmer 6
 ```
 
-Produces 936 files (~654 MB). Each file holds
+Or programmatically — note the real function name is `encode_ids_to_cache`
+(`vhenet/encode_ids.py`), not `build_ids_cache`:
+
+```python
+from vhenet.encode_ids import encode_ids_to_cache
+encode_ids_to_cache("data/virus_sequences.fasta", "cache/ids_km_cache_934",
+                    kmer=6)
+```
+
+Produces ~936 files (~654 MB). Each file holds
 `{'ids': [Nwin, 1024] int16, 'mask': ..., 'hist': [Nwin, 4096] float32, 'starts': ..., 'seq_len': int}`.
 
 ### B3. Window CLS cache
 
+The real function is `encode_fasta_to_cache` (`vhenet/encode.py`), not
+`build_window_cls_cache`. **Pass `whiten_stats`**: `train.py` and `predict.py`
+construct the model with `whiten_stats=None` and therefore expect the cache to
+already hold whitened vectors.
+
 ```bash
-python - <<'PY'
-from vhenet.encode import build_window_cls_cache
-build_window_cls_cache(
-    fasta="data/virus_sequences.fasta",
-    model_path="pretrained/lucaVirus",
-    cache_dir="cache/cls_windows_cache_934.pt",
-    window=1022, stride=512)
-PY
+python -m vhenet.encode --fasta data/virus_sequences.fasta \
+    --cache-dir cache/cls_windows_cache_934 \
+    --packed-path cache/cls_windows_cache_934.pt \
+    --whiten-stats data/whiten_stats.pt
 ```
 
-934 viruses x ~59 windows x 2560 dimensions (~360 MB). Alternatively export it directly
-from a training run - `train.py` writes the cache whenever it is missing.
+```python
+import torch
+from vhenet.encode import encode_fasta_to_cache
+stats = torch.load("data/whiten_stats.pt", map_location="cpu")
+encode_fasta_to_cache("data/virus_sequences.fasta", "cache/cls_windows_cache_934",
+                      model=model, device=dev, whiten_stats=stats,
+                      packed_path="cache/cls_windows_cache_934.pt")
+```
+
+934 viruses, **35,160 windows total**, 2560 dimensions (~360 MB).
+
+Confirm what you built with:
+
+```python
+from vhenet.encode import verify_cache_whitening
+verify_cache_whitening("cache/cls_windows_cache_934.pt", stats, n_virus=60)
+# => 已白化: as-is cosine ~0.00-0.09, 反白化后升高到 ~0.70
+```
 
 ### B4. Whitening statistics
 
 `data/whiten_stats.pt` **is** tracked by Git (25 MB) and contains
 `{'mean': [2560], 'W': [2560, 2560], 'n': int, 'singular': ..., 'eps': ...}`.
 
-To regenerate it, run `train.py` once with `whiten_stats: null`; the script computes and
-saves the statistics from the training CLS distribution.
+⚠️ `train.py` does **not** compute or regenerate this file — it reads
+`whiten_stats: data/whiten_stats.pt` from the config but discards it, because
+whitening is applied once, when the CLS cache is built (see B3). To rebuild the
+statistics you must run the whitening fit on the uncached CLS distribution
+explicitly; no script in this repository currently does that, so treat
+`data/whiten_stats.pt` as a required input rather than a generated artefact.
 
 ### B5. Train the checkpoints yourself
 
