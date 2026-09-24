@@ -21,21 +21,6 @@ This repository contains the complete, self-contained code and data needed to
 | Grid | 934 viruses x 451 hosts = **421,234 pairs** |
 | Sampling | strict **1:10** positives:negatives, 41,745 pairs |
 | Split | pairwise `ShuffleSplit(test_size=0.2, random_state=42)` |
-| Variants | `with_weight` (`imp_upper=20`) vs `without_weight` (`imp_upper=1`) |
-
-### Reported metrics (validation, 8,349 pairs, 797 positives)
-
-| Metric | with_weight | without_weight |
-|---|---|---|
-| **PR-AUC** | **0.5587** | 0.5474 |
-| **ROC-AUC** | **0.9105** | 0.9058 |
-| Accuracy | 0.9235 | 0.9286 |
-| F1 | 0.6176 | **0.6270** |
-| Precision | 0.5904 | **0.6255** |
-| Recall | **0.6474** | 0.6286 |
-| MCC | 0.5759 | **0.5876** |
-| Balanced accuracy | **0.8000** | 0.7944 |
-| Predicted positive | **874** | 801 |
 
 ---
 

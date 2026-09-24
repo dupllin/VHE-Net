@@ -66,9 +66,10 @@ A threshold rule `importance_score >= 20` predicts `Label` with **100.000000 %**
 
 - You cannot use `importance score` as an evaluation-stratification variable: it is a
   deterministic function of the label.
-- The reported "binned PR-AUC" increase (e.g. 0.5587 -> 0.7636) is a **prevalence
-  artefact**. The `clean` set (`bin1 u bin2`) raises the positive rate from 9.55 % to
-  38.48 %, and PR-AUC is prevalence-sensitive.
+- The reported "binned PR-AUC" increase is a **prevalence artefact**. The `clean` set
+  (`bin1 u bin2`) raises the positive rate from 9.55 % to 38.48 %, and PR-AUC is
+  prevalence-sensitive, so the increase reflects the change in positive rate rather than a
+  gain in discrimination.
 - **Per-bin AUC is mathematically undefined here.** `bin1` contains all 797 validation
   positives and zero negatives; `bin2` and `bin3` contain zero positives. A single-class
   set has no ROC or PR curve.
@@ -141,15 +142,11 @@ different split (`split_by_virus: true`) and has not been evaluated here.
 | Held-out pool | **387,838** | full grid minus the 33,396 training pairs | **novel-prediction counts** |
 
 The full grid includes training pairs, where the model recalls 2,998 of 2,998 positives.
-Reporting precision on the full grid therefore inflates it by roughly 5.8x
-(0.1667 vs 0.0286 for `with_weight`).
+Reporting precision on the full grid therefore inflates it by roughly 5.8x relative to the
+held-out pool.
 
-Novel-prediction counts should always be computed on the held-out pool:
-
-```
-with_weight:    predicted positive 18,072 | true positive 516 | novel 17,556
-without_weight: predicted positive 15,659 | true positive 501 | novel 15,158
-```
+Novel-prediction counts should always be computed on the held-out pool, never on the full
+grid.
 
 ---
 
