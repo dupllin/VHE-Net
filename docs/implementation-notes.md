@@ -66,13 +66,8 @@ A threshold rule `importance_score >= 20` predicts `Label` with **100.000000 %**
 
 - You cannot use `importance score` as an evaluation-stratification variable: it is a
   deterministic function of the label.
-- The reported "binned PR-AUC" increase is a **prevalence artefact**. The `clean` set
-  (`bin1 u bin2`) raises the positive rate from 9.55 % to 38.48 %, and PR-AUC is
-  prevalence-sensitive, so the increase reflects the change in positive rate rather than a
-  gain in discrimination.
-- **Per-bin AUC is mathematically undefined here.** `bin1` contains all 797 validation
-  positives and zero negatives; `bin2` and `bin3` contain zero positives. A single-class
-  set has no ROC or PR curve.
+- Any metric computed on an `importance score`-stratified subset is therefore not
+  comparable across subsets; the subsetting itself encodes the label.
 
 ---
 

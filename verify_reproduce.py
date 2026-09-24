@@ -96,5 +96,5 @@ Next steps:
   1. python train.py --config configs/vhe_net_with_weight.yaml
   2. python train.py --config configs/vhe_net_without_weight.yaml
   3. python predict.py --config configs/vhe_net_with_weight.yaml --checkpoint checkpoints/vhe_net_with_weight/last_model.pt --out outputs/predictions.csv
-  4. compute PR-AUC / ROC-AUC / F1 / MCC on the validation fold from outputs/predictions.csv
+  4. compute the metrics you intend to report on the validation fold from outputs/predictions.csv
 """)

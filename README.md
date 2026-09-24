@@ -174,9 +174,8 @@ These are easy to get wrong when reading the code; they are documented explicitl
 2. **`importance score` is fully determined by the label.**
    `importance_score == 20.0` for every positive pair (a single unique value) and lies in
    `[3.7366, 9.999993]` for negatives; predicting `importance_score >= 20` reproduces the
-   label with **100.000000 %** accuracy. The *binned PR-AUC* variation is therefore a
-   prevalence artefact: per-bin AUC is mathematically undefined because `bin2` and `bin3`
-   contain **zero** positives.
+   label with **100.000000 %** accuracy. It therefore cannot be used to stratify an
+   evaluation set: the stratification itself encodes the label.
 
 3. **`bce_clip` is a sample-weight ceiling, not a logit clamp.**
    It enters as `weights.clamp(min=0.0, max=clip)` inside `weighted_bce`. With `clip=100`
