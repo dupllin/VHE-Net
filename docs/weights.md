@@ -8,7 +8,7 @@ run inference or reproduce the reported numbers:
 | `pretrained/lucaVirus/` | 3.6 GB | no | both train and predict |
 | `cache/ids_km_cache_934/` | 654 MB | no | training |
 | `cache/cls_windows_cache_934.pt` | 360 MB | no | training and predict |
-| `checkpoints/vhe_net_*/{best,last}_model.pt` | 4 x 3.6 GB | no | predict only |
+| `checkpoints/vhe_net_*/model.pt` | 4 x 3.6 GB | no | predict only |
 
 **These artefacts are not hosted in this repository or in a GitHub Release.**
 GitHub caps release assets at 2 GB per file, and `pretrained/lucaVirus/model.safetensors`
@@ -30,10 +30,7 @@ VHE-Net/
 │   ├── ids_km_cache_934/             <- 654 MB, from B2
 │   └── cls_windows_cache_934.pt      <- 360 MB, from B3
 └── checkpoints/
-    ├── vhe_net_with_weight/
-    │   └── best_model.pt
-    └── vhe_net_without_weight/
-        └── best_model.pt
+    ├──  best_model.pt
 ```
 
 Check it with:
@@ -151,10 +148,7 @@ Cheaper than downloading 15 GB if you have a GPU:
 
 ```bash
 python train.py --config configs/vhe_net_with_weight.yaml
-python train.py --config configs/vhe_net_without_weight.yaml
 ```
-
-Roughly 25 minutes per model (~150 epochs at 5 s each), peak 4.8 GB VRAM.
 
 ---
 
