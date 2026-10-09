@@ -1,13 +1,10 @@
 # VHE-Net
 
-**Reproducible deep learning for virus-host association ranking.**
+**Virus Host Environment deep learning for virus-host association risk score predictor.**
 
-VHE-Net scores every (virus, host) pair on a fixed 934 x 451 grid and ranks candidate
-hosts for each virus. The model couples a frozen protein language model encoder with a
-learned virus-host interaction head and a **niche-weighted** training objective.
+VHE-Net risk scores every (virus, host) pair on a fixed 934 x 451 grid and ranks candidate
+hosts for each virus. The model is designed to learn the virus–host interaction module and employs a niche-weighted training objective.
 
-This repository contains the complete, self-contained code and data needed to
-**retrain the model and reproduce the reported numbers**.
 
 ---
 
@@ -67,10 +64,8 @@ self-check passed
 
 ```bash
 python train.py --config configs/vhe_net_with_weight.yaml
-python train.py --config configs/vhe_net_without_weight.yaml
 ```
 
-About 25 minutes per model on a single GPU (peak ~4.8 GB VRAM).
 
 ### 4. Predict
 
@@ -96,7 +91,7 @@ VHE-Net/
 ├── verify_reproduce.py            # integrity + reproducibility self-check
 │
 ├── vhenet/                        # package
-│   ├── model.py                   #   ViHGAT_814v6 + SelfAttnPoolMoE + LoRA injection
+│   ├── model.py                   #   ViHGAT + SelfAttnPoolMoE + LoRA injection
 │   ├── layers.py                  #   shared MLP / attention building blocks
 │   ├── losses.py                  #   weighted_bce, per_virus_softmax_loss
 │   ├── metrics.py                 #   ranking metrics
@@ -132,27 +127,20 @@ VHE-Net/
 
 ## Configuration
 
-The two configs differ in **exactly one effective field**:
 
-```yaml
-# vhe_net_with_weight.yaml      # vhe_net_without_weight.yaml
-data:
-  imp_upper: 20.0                 imp_upper: 1.0
-```
-
-Everything else - architecture, loss coefficients, sampling ratio, split, seed - is identical.
+Parameters like - architecture, loss coefficients, sampling ratio, split, seed - is identical.
 
 | Field | Value |
 |---|---|
 | `data.down_sample_ratio` | `0.0909114865` |
 | `data.train_test_split` | `0.8` |
 | `data.random_state` | `42` |
-| `data.split_by_virus` | `false` (pairwise, **not** grouped by virus) |
+| `data.split_by_virus` | `false` ｜
 | `training.bce_lambda` | `1.0` |
 | `training.rank_lambda` | `1.0` |
 | `training.entropy_lambda` | `0.1` |
 | `training.align_lambda` | `1.0` |
-| `training.epochs` | `200` (early stop patience 100) |
+| `training.epochs` | `200` |
 
 ---
 
@@ -165,26 +153,25 @@ These are easy to get wrong when reading the code; they are documented explicitl
    `freeze_lora=true` freezes both the LucaVirus backbone *and* all 96 LoRA tensors.
    Only the aggregation heads, interaction layers, classifier and `SelfAttnPoolMoE`
    are trained: **2,550,017 parameters** (2,218,241 in the model + 331,776 in
-   `SelfAttnPoolMoE`), i.e. **0.27 %** of the 950,889,767-parameter encoder. An earlier
-   README quoted "~332 K", which is the `SelfAttnPoolMoE` module alone and understates
-   the trainable set by 7.7x. Please describe this as a *frozen encoder*, **not** as a
+   `SelfAttnPoolMoE`), i.e. **0.27 %** of the 950,889,767-parameter encoder.
+   Please describe this as a *frozen encoder*, **not** as a
    fine-tuned LucaVirus — the encoder is not merely frozen, it is never even executed
    during training or inference, because both read pre-computed CLS features.
 
-2. **`importance score` is fully determined by the label.**
+3. **`importance score` is fully determined by the label.**
    `importance_score == 20.0` for every positive pair (a single unique value) and lies in
    `[3.7366, 9.999993]` for negatives; predicting `importance_score >= 20` reproduces the
    label with **100.000000 %** accuracy. It therefore cannot be used to stratify an
    evaluation set: the stratification itself encodes the label.
 
-3. **`bce_clip` is a sample-weight ceiling, not a logit clamp.**
+4. **`bce_clip` is a sample-weight ceiling, not a logit clamp.**
    It enters as `weights.clamp(min=0.0, max=clip)` inside `weighted_bce`. With `clip=100`
    and a maximum positive weight of 20, the parameter is inert for these runs.
 
-4. **Training consumes pre-computed CLS features**, not raw sequence forward passes.
+5. **Training consumes pre-computed CLS features**, not raw sequence forward passes.
    The 0.95 B encoder runs once during cache construction; each subsequent epoch takes ~5 s.
 
-5. **Three evaluation scopes exist and must not be mixed.**
+6. **Three evaluation scopes exist and must not be mixed.**
 
    | Scope | Size | Note |
    |---|---|---|
